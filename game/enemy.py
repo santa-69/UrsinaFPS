@@ -9,7 +9,7 @@ class Enemy(ursina.Entity):
             origin_y=-0.5,
             collider="box",
             texture="white_cube",
-            color=ursina.color.color(0, 0, 1),
+            color=ursina.color.hsv(0, 0, 1),
             scale=ursina.Vec3(1, 2, 1)
         )
 
@@ -19,7 +19,7 @@ class Enemy(ursina.Entity):
             scale=ursina.Vec3(0.1, 0.2, 0.65),
             model="cube",
             texture="white_cube",
-            color=ursina.color.color(0, 0, 0.4)
+            color=ursina.color.hsv(0, 0, 0.4)
         )
 
         self.name_tag = ursina.Text(
@@ -36,13 +36,17 @@ class Enemy(ursina.Entity):
         self.username = username
 
     def update(self):
+        if hasattr(self, "is_empty") and self.is_empty():
+            return
         try:
             color_saturation = 1 - self.health / 100
         except AttributeError:
             self.health = 100
             color_saturation = 1 - self.health / 100
 
-        self.color = ursina.color.color(0, color_saturation, 1)
+        self.color = ursina.color.hsv(0, color_saturation, 1)
 
         if self.health <= 0:
-            ursina.destroy(self)
+            self.enabled = False
+            self.collision = False
+            self.visible = False

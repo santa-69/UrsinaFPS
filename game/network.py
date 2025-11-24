@@ -101,3 +101,14 @@ class Network:
             self.client.send(health_info_encoded)
         except socket.error as e:
             print(e)
+
+    def send_restart(self, seed: int):
+        restart_info = {
+            "object": "restart",
+            "seed": seed
+        }
+        restart_info_encoded = json.dumps(restart_info).encode("utf8")
+        try:
+            self.client.send(restart_info_encoded)
+        except socket.error as e:
+            print(e)

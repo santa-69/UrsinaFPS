@@ -1,12 +1,13 @@
 # Ursina FPS
-A small FPS game made in Python 3 using the Ursina Engine.
+a relatively simple multiplayer fps game made with python and the ursina game engine
 
-## Playing the game
-Install the dependencies with `pip install -r requirements.txt` and do `python3 game/main.py` to run the game.
+## Dependencies
+The only dependency is Ursina. Run `pip install ursina` to install the game engine or follow instructions at (https://github.com/pokepetter/ursina). I recommend to do this in a venv as it appears Ursina only runs with python version 3.12. Learn about python venv here (https://docs.python.org/3/library/venv.html)
 
-## Running the server
-The server does not have any dependencies. To run it, simple run the `server/main.py` file.
+## Server 
+The server does not have any dependencies. You can simply run it by running the server/main.py file.
 
 ## Credits
+1. [MysteryCoder456](https://github.com/MysteryCoder456/UrsinaFPS) - The forked code
 1. [Richard Whitelock](https://distantlantern.itch.io) - Amazing Looking Skybox
 2. [Jestan](https://jestan.itch.io) - Tile Textures
