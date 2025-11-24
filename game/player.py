@@ -191,6 +191,8 @@ class Player(FirstPersonController):
             if attenuation <= 0:
                 return
             volume = self.shoot_volume * attenuation
+            # Keep a small floor to avoid going fully silent due to timing jitter.
+            volume = max(0.05, volume)
             sound = ursina.Audio(self.shoot_sound_path, autoplay=True, loop=False, volume=volume)
             ursina.destroy(sound, delay=2)
         except Exception:

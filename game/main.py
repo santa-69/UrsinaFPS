@@ -15,7 +15,7 @@ from map import Map
 from player import Player
 from enemy import Enemy
 from bullet import Bullet
-from ursina import Button
+from ursina import Button, invoke
 
 
 server_process = None
@@ -62,6 +62,22 @@ def ensure_server_running(port: int) -> bool:
 def prompt_connection_details(default_username="player", default_ip="127.0.0.1", default_port="8000", error_text=""):
     """Tkinter modal to collect username, IP, and port with defaults."""
     result = {}
+
+    def detect_host_ip(default="127.0.0.1"):
+        """Find a likely LAN IP by opening a dummy socket."""
+        try:
+            tmp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            tmp.connect(("8.8.8.8", 80))
+            ip = tmp.getsockname()[0]
+        except Exception:
+            ip = default
+        finally:
+            try:
+                tmp.close()
+            except Exception:
+                pass
+        return ip
+
     root = tk.Tk()
     root.title("Ursina FPS - Connect")
     root.resizable(False, False)
@@ -85,9 +101,22 @@ def prompt_connection_details(default_username="player", default_ip="127.0.0.1",
     tk.Radiobutton(mode_frame, text="Join", variable=mode_var, value="join").pack(side="left")
     tk.Radiobutton(mode_frame, text="Host", variable=mode_var, value="host").pack(side="left")
 
+    host_ip_text = tk.StringVar(value="")
+    host_ip_label = tk.Label(root, textvariable=host_ip_text, fg="blue")
+
     error_label = tk.Label(root, text=error_text, fg="red")
     if error_text:
         error_label.grid(row=3, column=0, columnspan=2, padx=10, pady=(4, 2))
+
+    def update_host_hint():
+        if mode_var.get() == "host":
+            ip_to_share = detect_host_ip(default_ip)
+            port_to_share = port_var.get().strip() or default_port
+            host_ip_text.set(f"Share this IP: {ip_to_share}:{port_to_share}")
+            host_ip_label.grid(row=4, column=0, columnspan=2, padx=10, pady=(2, 2))
+        else:
+            host_ip_text.set("")
+            host_ip_label.grid_remove()
 
     def submit():
         username = username_var.get().strip() or default_username
@@ -109,10 +138,13 @@ def prompt_connection_details(default_username="player", default_ip="127.0.0.1",
         root.destroy()
         sys.exit(0)
 
-    tk.Button(root, text="Connect", command=submit, width=12).grid(row=4, column=0, padx=10, pady=10, sticky="e")
-    tk.Button(root, text="Quit", command=cancel, width=12).grid(row=4, column=1, padx=10, pady=10, sticky="w")
+    tk.Button(root, text="Connect", command=submit, width=12).grid(row=5, column=0, padx=10, pady=10, sticky="e")
+    tk.Button(root, text="Quit", command=cancel, width=12).grid(row=5, column=1, padx=10, pady=10, sticky="w")
     root.bind("<Return>", lambda event: submit())
     root.protocol("WM_DELETE_WINDOW", cancel)
+    port_var.trace_add("write", lambda *args: update_host_hint())
+    mode_var.trace_add("write", lambda *args: update_host_hint())
+    update_host_hint()
 
     # Center the window
     root.update_idletasks()
@@ -264,7 +296,7 @@ def receive():
             b_damage = info["damage"]
             new_bullet = Bullet(b_pos, b_dir, b_x_dir, n, b_damage, slave=True)
             try:
-                player.play_shoot_sound_at(b_pos)
+                invoke(player.play_shoot_sound_at, b_pos)
             except Exception:
                 pass
 
