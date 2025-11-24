@@ -7,6 +7,7 @@ import time
 import random
 import tkinter as tk
 from tkinter import messagebox
+import queue
 import ursina
 from network import Network
 
@@ -19,6 +20,8 @@ from ursina import Button, invoke
 
 
 server_process = None
+incoming_events = queue.SimpleQueue()
+server_stopped = False
 
 
 def restart_game():
@@ -241,6 +244,13 @@ def restart_round(seed=None, is_local=False):
 
     for e in enemies:
         e.health = 100
+        e.enabled = True
+        e.visible = True
+        try:
+            e.collider = "box"
+            e.collision = True
+        except Exception:
+            pass
 
     hide_pause()
 
@@ -259,66 +269,85 @@ def receive():
             continue
 
         if not info:
-            print("Server has stopped! Exiting...")
-            sys.exit()
+            incoming_events.put({"object": "server_stopped"})
+            break
 
-        if info["object"] == "player":
-            enemy_id = info["id"]
+        incoming_events.put(info)
 
-            if info["joined"]:
-                new_enemy = Enemy(ursina.Vec3(*info["position"]), enemy_id, info["username"])
-                new_enemy.health = info["health"]
-                enemies.append(new_enemy)
-                continue
 
-            enemy = None
+def handle_info(info):
+    global server_stopped
 
+    if info["object"] == "player":
+        enemy_id = info["id"]
+
+        if info["joined"]:
+            new_enemy = Enemy(ursina.Vec3(*info["position"]), enemy_id, info["username"])
+            new_enemy.health = info["health"]
+            enemies.append(new_enemy)
+            return
+
+        enemy = None
+
+        for e in enemies:
+            if e.id == enemy_id:
+                enemy = e
+                break
+
+        if not enemy:
+            return
+
+        if info["left"]:
+            enemies.remove(enemy)
+            ursina.destroy(enemy)
+            return
+
+        enemy.world_position = ursina.Vec3(*info["position"])
+        enemy.rotation_y = info["rotation"]
+
+    elif info["object"] == "bullet":
+        b_pos = ursina.Vec3(*info["position"])
+        b_dir = info["direction"]
+        b_x_dir = info["x_direction"]
+        b_damage = info["damage"]
+        Bullet(b_pos, b_dir, b_x_dir, n, b_damage, slave=True)
+        try:
+            player.play_shoot_sound_at(b_pos)
+        except Exception:
+            pass
+
+    elif info["object"] == "health_update":
+        enemy_id = info["id"]
+
+        enemy = None
+
+        if enemy_id == n.id:
+            enemy = player
+        else:
             for e in enemies:
                 if e.id == enemy_id:
                     enemy = e
                     break
 
-            if not enemy:
-                continue
+        if not enemy:
+            return
 
-            if info["left"]:
-                enemies.remove(enemy)
-                ursina.destroy(enemy)
-                continue
-
-            enemy.world_position = ursina.Vec3(*info["position"])
-            enemy.rotation_y = info["rotation"]
-
-        elif info["object"] == "bullet":
-            b_pos = ursina.Vec3(*info["position"])
-            b_dir = info["direction"]
-            b_x_dir = info["x_direction"]
-            b_damage = info["damage"]
-            new_bullet = Bullet(b_pos, b_dir, b_x_dir, n, b_damage, slave=True)
+        was_dead = enemy.health <= 0
+        enemy.health = info["health"]
+        if enemy.health > 0 and was_dead:
+            enemy.enabled = True
+            enemy.visible = True
             try:
-                invoke(player.play_shoot_sound_at, b_pos)
+                enemy.collider = "box"
+                enemy.collision = True
             except Exception:
                 pass
-
-        elif info["object"] == "health_update":
-            enemy_id = info["id"]
-
-            enemy = None
-
-            if enemy_id == n.id:
-                enemy = player
-            else:
-                for e in enemies:
-                    if e.id == enemy_id:
-                        enemy = e
-                        break
-
-            if not enemy:
-                continue
-
-            enemy.health = info["health"]
-        elif info["object"] == "restart":
-            restart_round(seed=info.get("seed"), is_local=False)
+    elif info["object"] == "restart":
+        restart_round(seed=info.get("seed"), is_local=False)
+    elif info["object"] == "server_stopped":
+        server_stopped = True
+        print("Server has stopped! Exiting...")
+        ursina.application.quit()
 
 
 def show_pause():
@@ -349,6 +378,13 @@ def toggle_pause():
 
 
 def update():
+    while not incoming_events.empty():
+        try:
+            info = incoming_events.get_nowait()
+        except Exception:
+            break
+        handle_info(info)
+
     if player.health > 0:
         global prev_pos, prev_dir
 

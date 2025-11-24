@@ -7,7 +7,7 @@ from collision_data import STATIC_AABBS
 
 class Bullet(ursina.Entity):
     def __init__(self, position: ursina.Vec3, direction: float, x_direction: float, network, damage: int = random.randint(5, 20), slave=False):
-        speed = 35
+        speed = 80
         dir_rad = ursina.math.radians(direction)
         x_dir_rad = ursina.math.radians(x_direction)
 
