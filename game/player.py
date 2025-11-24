@@ -54,14 +54,16 @@ class Player(FirstPersonController):
             parent=ursina.camera.ui,
             model="quad",
             color=ursina.color.rgb(255, 0, 0),
-            position=self.healthbar_pos,
+            # place background slightly behind the foreground bar (z offset)
+            position=ursina.Vec3(self.healthbar_pos.x, self.healthbar_pos.y, 0),
             scale=self.healthbar_size
         )
         self.healthbar = ursina.Entity(
             parent=ursina.camera.ui,
             model="quad",
             color=ursina.color.rgb(0, 255, 0),
-            position=self.healthbar_pos,
+            # put the filling slightly in front (small negative z) to avoid z-fighting
+            position=ursina.Vec3(self.healthbar_pos.x, self.healthbar_pos.y, -0.01),
             scale=self.healthbar_size
         )
 
@@ -221,7 +223,17 @@ class Player(FirstPersonController):
         )
 
     def update(self):
-        self.healthbar.scale_x = self.health / 100 * self.healthbar_size.x
+        # Calculate new width for the health fill (in UI units)
+        new_width = (self.health / 100) * self.healthbar_size.x
+        # Update scale.x for the filled bar
+        self.healthbar.scale_x = new_width
+        # Keep the left edge stationary by shifting the bar's center when its width changes.
+        # When scaled from center, the center moves by half the difference; compensate for that.
+        self.healthbar.position = ursina.Vec3(
+            self.healthbar_pos.x - (self.healthbar_size.x - new_width) / 2,
+            self.healthbar_pos.y,
+            -0.01
+        )
 
         if self.health <= 0:
             if self.aiming:
