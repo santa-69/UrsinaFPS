@@ -1,7 +1,9 @@
 import os
 import sys
 import socket
+import subprocess
 import threading
+import time
 import random
 import tkinter as tk
 from tkinter import messagebox
@@ -16,9 +18,45 @@ from bullet import Bullet
 from ursina import Button
 
 
+server_process = None
+
+
 def restart_game():
     # Relaunch the current script with the same interpreter.
     os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)])
+
+
+def ensure_server_running(port: int) -> bool:
+    """Start the bundled server if it is not already running."""
+    global server_process
+    server_script = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "server", "main.py"))
+    server_cwd = os.path.dirname(server_script)
+
+    if server_process and server_process.poll() is None:
+        return True
+
+    try:
+        server_process = subprocess.Popen([sys.executable, server_script], cwd=server_cwd)
+    except OSError as exc:
+        messagebox.showerror("Server error", f"Could not start server: {exc}")
+        server_process = None
+        return False
+
+    # Wait briefly for the server to bind its socket.
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        if server_process.poll() is not None:
+            messagebox.showerror("Server error", "Server process exited unexpectedly.")
+            server_process = None
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return True
+        except OSError:
+            time.sleep(0.1)
+
+    messagebox.showerror("Server error", "Timed out waiting for the server to start.")
+    return False
 
 
 def prompt_connection_details(default_username="player", default_ip="127.0.0.1", default_port="8000", error_text=""):
@@ -98,6 +136,9 @@ def get_network():
         server_addr = details.get("ip", server_addr)
         server_port = details.get("port", server_port)
         mode = details.get("mode", "join")
+
+        if mode == "host" and not ensure_server_running(server_port):
+            continue
 
         n = Network(server_addr, server_port, username)
         n.settimeout(5)
@@ -222,6 +263,10 @@ def receive():
             b_x_dir = info["x_direction"]
             b_damage = info["damage"]
             new_bullet = Bullet(b_pos, b_dir, b_x_dir, n, b_damage, slave=True)
+            try:
+                player.play_shoot_sound_at(b_pos)
+            except Exception:
+                pass
 
         elif info["object"] == "health_update":
             enemy_id = info["id"]

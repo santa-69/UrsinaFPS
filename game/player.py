@@ -181,6 +181,21 @@ class Player(FirstPersonController):
         except Exception:
             pass
 
+    def play_shoot_sound_at(self, source_pos: ursina.Vec3):
+        """Play gunshot with simple distance attenuation."""
+        try:
+            listener_pos = ursina.Vec3(self.world_position)
+            distance = (listener_pos - source_pos).length()
+            max_hear_distance = 60.0
+            attenuation = max(0.0, 1.0 - distance / max_hear_distance)
+            if attenuation <= 0:
+                return
+            volume = self.shoot_volume * attenuation
+            sound = ursina.Audio(self.shoot_sound_path, autoplay=True, loop=False, volume=volume)
+            ursina.destroy(sound, delay=2)
+        except Exception:
+            pass
+
     def respawn(self, spawn_pos: ursina.Vec3):
         # Restore gun if it was destroyed on death.
         if not getattr(self, "gun", None) or getattr(self.gun, "is_destroyed", False):
