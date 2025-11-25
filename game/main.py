@@ -101,7 +101,7 @@ def prompt_connection_details(default_username="player", default_ip="127.0.0.1",
 
     root = tk.Tk()
     root.title("Ursina FPS - Connect")
-    root.resizable(True, False)
+    root.resizable(False, True)
 
     tk.Label(root, text="Username").grid(row=0, column=0, padx=10, pady=(10, 2), sticky="w")
     username_var = tk.StringVar(value=default_username)
