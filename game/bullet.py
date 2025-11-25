@@ -6,8 +6,9 @@ from collision_data import STATIC_AABBS
 
 
 class Bullet(ursina.Entity):
-    def __init__(self, position: ursina.Vec3, direction: float, x_direction: float, network, damage: int = random.randint(5, 20), slave=False):
-        speed = 80
+    def __init__(self, position: ursina.Vec3, direction: float, x_direction: float, network, damage: int = random.randint(5, 20), slave=False, speed: float = 80.0, shooter_team=None):
+        self.speed = speed
+        self.shooter_team = shooter_team
         dir_rad = ursina.math.radians(direction)
         x_dir_rad = ursina.math.radians(x_direction)
 
@@ -15,7 +16,7 @@ class Bullet(ursina.Entity):
             ursina.math.sin(dir_rad) * ursina.math.cos(x_dir_rad),
             ursina.math.sin(x_dir_rad),
             ursina.math.cos(dir_rad) * ursina.math.cos(x_dir_rad)
-        ) * speed
+        ) * self.speed
 
         super().__init__(
             position=position + self.velocity / speed,
@@ -110,9 +111,33 @@ class Bullet(ursina.Entity):
         )
 
         if hit.hit:
-            if not self.slave and isinstance(getattr(hit, "entity", None), Enemy):
-                hit.entity.health -= self.damage
-                self.network.send_health(hit.entity)
+            hit_entity = getattr(hit, "entity", None)
+            target_enemy = None
+            headshot = False
+
+            if isinstance(hit_entity, Enemy):
+                target_enemy = hit_entity
+            elif hasattr(hit_entity, "parent") and isinstance(hit_entity.parent, Enemy):
+                target_enemy = hit_entity.parent
+                headshot = getattr(hit_entity, "name", "") == "head"
+
+            # Fallback: infer headshots by impact height so we don't depend solely on the head collider.
+            if target_enemy and hasattr(hit, "world_point") and hit.world_point is not None:
+                if getattr(hit_entity, "name", "") == "head":
+                    headshot = True
+                else:
+                    # Approx head center scales with enemy size; head is placed ~0.82 units above origin in model space.
+                    head_height = target_enemy.world_y + 0.82 * getattr(target_enemy, "scale_y", 1)
+                    if hit.world_point.y >= head_height - 0.15:
+                        headshot = True
+
+            if not self.slave and target_enemy:
+                if self.shooter_team and getattr(target_enemy, "team", None) == self.shooter_team:
+                    return
+                damage = self.damage * (2 if headshot else 1)
+                target_enemy.health -= damage
+                if self.network:
+                    self.network.send_health(target_enemy)
             if hasattr(hit, "world_point") and hit.world_point is not None:
                 impact_point = hit.world_point
                 self.position = impact_point
@@ -133,7 +158,7 @@ class Bullet(ursina.Entity):
             return
 
         # Despawn if we leave the play area
-        if abs(self.world_x) > 100 or abs(self.world_z) > 100 or self.world_y < -5 or self.world_y > 100:
+        if abs(self.world_x) > 140 or abs(self.world_z) > 140 or self.world_y < -5 or self.world_y > 100:
             self._dead = True
             self.enabled = False
             self.visible = False

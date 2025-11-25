@@ -5,7 +5,7 @@ import ursina
 class Floor:
     def __init__(self):
         # Single large plane instead of thousands of cubes to keep FPS high.
-        size = 90  # covers roughly the expanded map area
+        size = 160  # larger play space for expanded map
         self.entity = ursina.Entity(
             position=ursina.Vec3(0, 0, 0),
             model="plane",

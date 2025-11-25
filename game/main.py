@@ -22,6 +22,15 @@ from ursina import Button, invoke
 server_process = None
 incoming_events = queue.SimpleQueue()
 server_stopped = False
+connected_players = set()
+game_mode = "ffa"
+tdm_kill_limit = 25
+team_scores = {"red": 0, "blue": 0}
+score_ui = None
+tdm_victory_announced = False
+victory_ui = None
+player_team_choice = None
+lobby_scroll_container = None
 
 
 def restart_game():
@@ -60,6 +69,15 @@ def ensure_server_running(port: int) -> bool:
 
     messagebox.showerror("Server error", "Timed out waiting for the server to start.")
     return False
+
+
+def assign_team(player_id) -> str:
+    """Deterministic team assignment based on player id for TDM."""
+    try:
+        pid = int(player_id)
+    except Exception:
+        pid = 0
+    return "blue" if pid % 2 == 0 else "red"
 
 
 def prompt_connection_details(default_username="player", default_ip="127.0.0.1", default_port="8000", error_text=""):
@@ -191,13 +209,16 @@ def get_network():
             n.settimeout(None)
 
         if not error_message:
-            return n, username
+            return n, username, server_addr, server_port
 
         # Show error and retry via GUI
         messagebox.showerror("Connection error", error_message)
 
 
-n, username = get_network()
+n, username, selected_server_addr, selected_server_port = get_network()
+player_team_choice = assign_team(n.id)
+connected_players.add(n.id)
+player_team = player_team_choice
 
 app = ursina.Ursina()
 ursina.window.borderless = False
@@ -213,24 +234,32 @@ sky = ursina.Entity(
     scale=9999,
     double_sided=True
 )
-spawn_pos = ursina.Vec3(random.randint(-30, 30), 1, random.randint(-30, 30))
+spawn_pos = ursina.Vec3(random.randint(-60, 60), 1, random.randint(-60, 60))
 player = Player(spawn_pos)
+try:
+    player.set_team(player_team)
+except Exception:
+    player.team = player_team
 prev_pos = player.world_position
 prev_dir = player.world_rotation_y
 enemies = []
 paused = False
 pause_ui = None
+lobby_ui = None
+lobby_player_count_text = None
+in_lobby = True
+score_ui = ursina.Text(parent=ursina.camera.ui, text="", origin=(0, 0), position=ursina.Vec2(0, 0.47), scale=1.2, color=ursina.color.white)
+lobby_scroll_container = None
 
 
 def random_spawn(seed=None):
     rng = random.Random()
     if seed is not None:
         rng.seed(seed)
-    return ursina.Vec3(rng.randint(-30, 30), 1, rng.randint(-30, 30))
-
+    return ursina.Vec3(rng.randint(-60, 60), 1, rng.randint(-60, 60))
 
 def restart_round(seed=None, is_local=False):
-    global paused, prev_pos, prev_dir
+    global paused, prev_pos, prev_dir, team_scores
 
     if seed is None:
         seed = random.randint(1, 1_000_000)
@@ -239,18 +268,30 @@ def restart_round(seed=None, is_local=False):
     spawn = random_spawn(per_player_seed)
 
     player.respawn(spawn)
+    try:
+        player._scored_death = False
+    except Exception:
+        pass
     prev_pos = player.world_position
     prev_dir = player.world_rotation_y
+    team_scores = {"red": 0, "blue": 0}
+    update_score_ui()
 
     for e in enemies:
         e.health = 100
-        e.enabled = True
-        e.visible = True
         try:
+            e.reset_state()
             e.collider = "box"
             e.collision = True
         except Exception:
-            pass
+            # If reset_state not available or failed, fall back to enabling.
+            e.enabled = True
+            e.visible = True
+            try:
+                e.collider = "box"
+                e.collision = True
+            except Exception:
+                pass
 
     hide_pause()
 
@@ -258,6 +299,79 @@ def restart_round(seed=None, is_local=False):
     if is_local:
         n.send_restart(seed)
         n.send_player(player)
+
+
+def update_lobby_status_text():
+    if lobby_player_count_text:
+        lobby_player_count_text.text = f"Players connected: {len(connected_players)}"
+
+
+def clear_victory_ui():
+    global victory_ui
+    if victory_ui:
+        try:
+            ursina.destroy(victory_ui)
+        except Exception:
+            pass
+    victory_ui = None
+
+
+def update_score_ui():
+    if not score_ui:
+        return
+    if game_mode != "tdm":
+        score_ui.text = ""
+        return
+    red = team_scores.get("red", 0)
+    blue = team_scores.get("blue", 0)
+    score_ui.text = f"Red {red}  -  {blue} Blue"
+
+
+def set_player_team(team: str):
+    global player_team_choice
+    player_team_choice = team
+    try:
+        player.set_team(team)
+    except Exception:
+        player.team = team
+    update_score_ui()
+
+
+def check_tdm_victory():
+    global tdm_victory_announced
+    if tdm_victory_announced or game_mode != "tdm":
+        return
+    if team_scores.get("red", 0) >= tdm_kill_limit:
+        tdm_victory_announced = True
+        show_victory("red")
+    elif team_scores.get("blue", 0) >= tdm_kill_limit:
+        tdm_victory_announced = True
+        show_victory("blue")
+
+
+def show_victory(winning_team: str):
+    """Display win/lose splash and return to lobby after a short delay."""
+    global victory_ui
+    clear_victory_ui()
+    overlay = ursina.Entity(parent=ursina.camera.ui, model="quad", scale=2, color=ursina.color.Color(0, 0, 0, 0.7))
+    message = "Match Over"
+    color = ursina.color.white
+    if hasattr(player, "team"):
+        if player.team == winning_team:
+            message = "You Win!"
+            color = ursina.color.lime
+        else:
+            message = "You Lose"
+            color = ursina.color.red
+    text = ursina.Text(parent=overlay, text=message, origin=(0, 0), scale=3, color=color)
+    victory_ui = overlay
+    def finish():
+        clear_victory_ui()
+        team_scores["red"] = 0
+        team_scores["blue"] = 0
+        update_score_ui()
+        show_lobby()
+    invoke(finish, delay=3)
 
 
 def receive():
@@ -276,7 +390,7 @@ def receive():
 
 
 def handle_info(info):
-    global server_stopped
+    global server_stopped, tdm_victory_announced
 
     if info["object"] == "player":
         enemy_id = info["id"]
@@ -284,7 +398,10 @@ def handle_info(info):
         if info["joined"]:
             new_enemy = Enemy(ursina.Vec3(*info["position"]), enemy_id, info["username"])
             new_enemy.health = info["health"]
+            new_enemy.team = assign_team(enemy_id)
             enemies.append(new_enemy)
+            connected_players.add(enemy_id)
+            update_lobby_status_text()
             return
 
         enemy = None
@@ -300,6 +417,9 @@ def handle_info(info):
         if info["left"]:
             enemies.remove(enemy)
             ursina.destroy(enemy)
+            if enemy_id in connected_players:
+                connected_players.discard(enemy_id)
+                update_lobby_status_text()
             return
 
         enemy.world_position = ursina.Vec3(*info["position"])
@@ -310,7 +430,8 @@ def handle_info(info):
         b_dir = info["direction"]
         b_x_dir = info["x_direction"]
         b_damage = info["damage"]
-        Bullet(b_pos, b_dir, b_x_dir, n, b_damage, slave=True)
+        b_speed = info.get("speed", 80.0)
+        Bullet(b_pos, b_dir, b_x_dir, n, b_damage, slave=True, speed=b_speed)
         try:
             player.play_shoot_sound_at(b_pos)
         except Exception:
@@ -335,11 +456,29 @@ def handle_info(info):
         was_dead = enemy.health <= 0
         enemy.health = info["health"]
         if enemy.health > 0 and was_dead:
-            enemy.enabled = True
-            enemy.visible = True
+            if hasattr(enemy, "reset_state"):
+                enemy.reset_state()
+            else:
+                enemy.enabled = True
+                enemy.visible = True
+                try:
+                    enemy.collider = "box"
+                    enemy.collision = True
+                except Exception:
+                    pass
+        elif enemy.health <= 0:
+            if game_mode == "tdm" and getattr(enemy, "team", None):
+                if enemy.team == "red":
+                    team_scores["blue"] = team_scores.get("blue", 0) + 1
+                elif enemy.team == "blue":
+                    team_scores["red"] = team_scores.get("red", 0) + 1
+                update_score_ui()
+                check_tdm_victory()
             try:
-                enemy.collider = "box"
-                enemy.collision = True
+                if hasattr(enemy, "die"):
+                    enemy.die()
+                elif hasattr(enemy, "death"):
+                    enemy.death()
             except Exception:
                 pass
     elif info["object"] == "restart":
@@ -377,6 +516,162 @@ def toggle_pause():
         show_pause()
 
 
+def set_healthbar_visible(visible: bool):
+    try:
+        player.healthbar.enabled = visible
+        player.healthbar_bg.enabled = visible
+    except Exception:
+        pass
+
+
+def start_game():
+    global in_lobby, prev_pos, prev_dir, game_mode, tdm_victory_announced
+    if lobby_ui:
+        lobby_ui.enabled = False
+    in_lobby = False
+    try:
+        player.enabled = True
+        prev_pos = player.world_position
+        prev_dir = player.world_rotation_y
+        n.send_player(player)
+    except Exception:
+        pass
+    if game_mode == "tdm":
+        team_scores["red"] = 0
+        team_scores["blue"] = 0
+    update_score_ui()
+    tdm_victory_announced = False
+    clear_victory_ui()
+    ursina.mouse.locked = True
+    set_healthbar_visible(True)
+
+
+def show_lobby():
+    """Return to lobby UI from pause menu."""
+    global in_lobby, paused, tdm_victory_announced
+    if lobby_ui:
+        lobby_ui.enabled = True
+    else:
+        build_lobby_ui()
+    in_lobby = True
+    paused = False
+    tdm_victory_announced = False
+    ursina.application.paused = False
+    try:
+        if hasattr(player, "set_aim"):
+            player.set_aim(False)
+        player.trigger_held = False
+        player.enabled = False
+    except Exception:
+        pass
+    ursina.mouse.locked = False
+    if pause_ui:
+        pause_ui.enabled = False
+    set_healthbar_visible(False)
+
+
+def build_lobby_ui():
+    global lobby_ui, lobby_player_count_text, connected_players, in_lobby, game_mode, tdm_kill_limit, lobby_scroll_container
+    lobby_ui = ursina.Entity(parent=ursina.camera.ui, enabled=True)
+    overlay = ursina.Entity(
+        parent=lobby_ui,
+        model="quad",
+        scale=2,
+        color=ursina.color.Color(0, 0, 0, 0.65)
+    )
+    panel = ursina.Entity(parent=lobby_ui, model="quad", scale=ursina.Vec2(1.05, 1.2), color=ursina.color.Color(0.1, 0.1, 0.1, 0.92))
+    scroll_frame = ursina.Entity(parent=panel, model=None, position=ursina.Vec3(0, 0.0, -0.01))
+    lobby_scroll_container = ursina.Entity(parent=scroll_frame, model=None, position=ursina.Vec3(0, -0.12, 0))
+    ursina.Text(parent=lobby_scroll_container, text="Lobby", origin=(0, 0), y=0.42, scale=2)
+    ursina.Text(parent=lobby_scroll_container, text=f"Server: {selected_server_addr}:{selected_server_port}", origin=(0, 0), y=0.30, scale=1.2)
+    ursina.Text(parent=lobby_scroll_container, text=f"Username: {username}", origin=(0, 0), y=0.22, scale=1)
+    lobby_player_count_text = ursina.Text(parent=lobby_scroll_container, text="Players connected: 1", origin=(0, 0), y=0.14, scale=1.1)
+    Button(parent=lobby_scroll_container, text="Start Game", scale=ursina.Vec2(0.35, 0.09), y=0.04, color=ursina.color.Color(0.2, 0.6, 0.2, 1), on_click=start_game)
+    ursina.Text(parent=lobby_scroll_container, text="Wait here until everyone joins, then start.", origin=(0, 0), y=-0.06, scale=0.9, color=ursina.color.light_gray)
+
+    # Game mode selector
+    mode_label = ursina.Text(parent=lobby_scroll_container, text=f"Mode: {'Team Deathmatch' if game_mode == 'tdm' else 'Free For All'}", origin=(0, 0), y=-0.14, scale=1.0)
+
+    def set_mode(mode_key):
+        nonlocal mode_label
+        mode_label.text = f"Mode: {'Team Deathmatch' if mode_key == 'tdm' else 'Free For All'}"
+        globals()["game_mode"] = mode_key
+        if mode_key == "tdm":
+            globals()["team_scores"] = {"red": 0, "blue": 0}
+        update_score_ui()
+
+    Button(parent=lobby_scroll_container, text="Free For All", scale=ursina.Vec2(0.22, 0.07), position=ursina.Vec2(-0.18, -0.20), on_click=lambda: set_mode("ffa"))
+    Button(parent=lobby_scroll_container, text="Team Deathmatch", scale=ursina.Vec2(0.26, 0.07), position=ursina.Vec2(0.20, -0.20), on_click=lambda: set_mode("tdm"))
+
+    # Team selection
+    ursina.Text(parent=lobby_scroll_container, text="Choose Team (TDM)", origin=(0, 0), y=-0.30, scale=0.9)
+    team_buttons = []
+
+    def update_team_buttons(selected):
+        for name, btn in team_buttons:
+            if name == "red":
+                btn.color = ursina.color.rgb(0.8, 0.1, 0.1) if selected == "red" else ursina.color.gray
+            elif name == "blue":
+                btn.color = ursina.color.rgb(0.1, 0.4, 0.9) if selected == "blue" else ursina.color.gray
+
+    red_btn = Button(parent=lobby_scroll_container, text="Red", scale=ursina.Vec2(0.18, 0.07), position=ursina.Vec2(-0.12, -0.36), on_click=lambda: (set_player_team("red"), update_team_buttons("red")))
+    blue_btn = Button(parent=lobby_scroll_container, text="Blue", scale=ursina.Vec2(0.18, 0.07), position=ursina.Vec2(0.12, -0.36), on_click=lambda: (set_player_team("blue"), update_team_buttons("blue")))
+    team_buttons.append(("red", red_btn))
+    team_buttons.append(("blue", blue_btn))
+    update_team_buttons(player_team_choice or "red")
+
+    # TDM options
+    tdm_label = ursina.Text(parent=lobby_scroll_container, text=f"TDM Kill Limit: {tdm_kill_limit}", origin=(0, 0), y=-0.48, scale=0.9, color=ursina.color.azure)
+
+    def adjust_kill_limit(delta):
+        nonlocal tdm_label
+        globals()["tdm_kill_limit"] = max(5, min(200, globals()["tdm_kill_limit"] + delta))
+        tdm_label.text = f"TDM Kill Limit: {globals()['tdm_kill_limit']}"
+
+    Button(parent=lobby_scroll_container, text="-", scale=ursina.Vec2(0.07, 0.07), position=ursina.Vec2(-0.18, -0.54), on_click=lambda: adjust_kill_limit(-5))
+    Button(parent=lobby_scroll_container, text="+", scale=ursina.Vec2(0.07, 0.07), position=ursina.Vec2(-0.07, -0.54), on_click=lambda: adjust_kill_limit(5))
+
+    # Spacer (bots removed)
+    ursina.Text(parent=lobby_scroll_container, text="", origin=(0, 0), y=-0.62, scale=0.9, color=ursina.color.white)
+    # Scroll handling
+    def scroll_lobby(amount):
+        lobby_scroll_container.y = max(-0.8, min(0.2, lobby_scroll_container.y + amount * 0.05))
+    scroll_lobby(0)
+
+    # Initialize mode state.
+    set_mode(game_mode)
+    set_healthbar_visible(False)
+    clear_victory_ui()
+    in_lobby = True
+    try:
+        player.enabled = False
+    except Exception:
+        pass
+    ursina.mouse.locked = False
+    update_lobby_status_text()
+    update_score_ui()
+
+
+def fire_player_bullet():
+    if not player.can_fire():
+        return
+    try:
+        b_pos = player.get_muzzle_world_position()
+    except Exception:
+        b_pos = player.position + ursina.Vec3(0, 2, 0)
+
+    damage = player.get_bullet_damage()
+    bullet_speed = getattr(player, "get_bullet_speed", lambda: 80.0)()
+    shooter_team = player.get_team() if hasattr(player, "get_team") and game_mode == "tdm" else None
+    bullet = Bullet(b_pos, player.world_rotation_y, -player.camera_pivot.world_rotation_x, n, damage=damage, speed=bullet_speed, shooter_team=shooter_team)
+    n.send_bullet(bullet)
+    player.record_shot()
+    player.play_shoot_sound()
+    if shooter_team and game_mode == "tdm":
+        update_score_ui()
+        check_tdm_victory()
+
+
 def update():
     while not incoming_events.empty():
         try:
@@ -385,17 +680,46 @@ def update():
             break
         handle_info(info)
 
+    if in_lobby:
+        return
+
     if player.health > 0:
         global prev_pos, prev_dir
+
+        if not paused and player.trigger_held and getattr(player, "auto_fire", False) and player.can_fire():
+            fire_player_bullet()
 
         if prev_pos != player.world_position or prev_dir != player.world_rotation_y:
             n.send_player(player)
 
         prev_pos = player.world_position
         prev_dir = player.world_rotation_y
+    else:
+        # Credit opposing team on local death in TDM once.
+        if game_mode == "tdm" and hasattr(player, "team") and getattr(player, "_death_started", False) and not getattr(player, "_scored_death", False):
+            if player.team == "red":
+                team_scores["blue"] = team_scores.get("blue", 0) + 1
+            elif player.team == "blue":
+                team_scores["red"] = team_scores.get("red", 0) + 1
+            player._scored_death = True
+            update_score_ui()
+            check_tdm_victory()
 
 
 def input(key):
+    if in_lobby:
+        if key == "scroll up":
+            try:
+                lobby_scroll_container.y = max(-0.8, min(0.2, lobby_scroll_container.y + 0.05))
+            except Exception:
+                pass
+        elif key == "scroll down":
+            try:
+                lobby_scroll_container.y = max(-0.8, min(0.2, lobby_scroll_container.y - 0.05))
+            except Exception:
+                pass
+        return
+
     if key == "escape":
         toggle_pause()
         return
@@ -414,12 +738,12 @@ def input(key):
         player.start_reload()
         return
 
-    if key == "left mouse down" and player.can_fire():
-        b_pos = player.position + ursina.Vec3(0, 2, 0)
-        bullet = Bullet(b_pos, player.world_rotation_y, -player.camera_pivot.world_rotation_x, n)
-        n.send_bullet(bullet)
-        player.consume_ammo()
-        player.play_shoot_sound()
+    if key == "left mouse down":
+        player.trigger_held = True
+        fire_player_bullet()
+        return
+    if key == "left mouse up":
+        player.trigger_held = False
 
 
 def main():
@@ -433,12 +757,38 @@ def main():
         color=ursina.color.Color(0, 0, 0, 0.6)
     )
 
-    panel = ursina.Entity(parent=pause_ui, model="quad", scale=ursina.Vec2(0.6, 0.4), color=ursina.color.Color(0.1, 0.1, 0.1, 0.9))
-    ursina.Text(parent=panel, text="Paused", origin=(0, 0), y=0.12, scale=2)
+    panel = ursina.Entity(parent=pause_ui, model="quad", scale=ursina.Vec2(0.7, 0.55), color=ursina.color.Color(0.1, 0.1, 0.1, 0.9))
+    ursina.Text(parent=panel, text="Paused", origin=(0, 0), y=0.18, scale=2)
 
-    Button(parent=panel, text="Resume", scale=ursina.Vec2(0.4, 0.08), y=0.06, on_click=hide_pause)
-    Button(parent=panel, text="Restart", scale=ursina.Vec2(0.4, 0.08), y=-0.02, color=ursina.color.Color(0.2, 0.4, 0.8, 1), on_click=lambda: restart_round(is_local=True))
-    Button(parent=panel, text="Quit", scale=ursina.Vec2(0.4, 0.08), y=-0.10, color=ursina.color.Color(0.5, 0.1, 0.1, 1), on_click=ursina.application.quit)
+    Button(parent=panel, text="Resume", scale=ursina.Vec2(0.4, 0.08), y=0.12, on_click=hide_pause)
+    Button(parent=panel, text="Restart", scale=ursina.Vec2(0.4, 0.08), y=0.02, color=ursina.color.Color(0.2, 0.4, 0.8, 1), on_click=lambda: restart_round(is_local=True))
+    Button(parent=panel, text="Lobby", scale=ursina.Vec2(0.4, 0.08), y=-0.08, color=ursina.color.Color(0.2, 0.5, 0.2, 1), on_click=show_lobby)
+    Button(parent=panel, text="Quit", scale=ursina.Vec2(0.4, 0.08), y=-0.18, color=ursina.color.Color(0.5, 0.1, 0.1, 1), on_click=ursina.application.quit)
+
+    # Weapon class selector
+    ursina.Text(parent=panel, text="Weapon Class", origin=(0, 0), y=-0.16, scale=1.2)
+    weapon_buttons = []
+
+    def update_weapon_buttons(selected):
+        for name, btn in weapon_buttons:
+            btn.color = ursina.color.azure if name == selected else ursina.color.gray
+
+    def select_weapon_class(name):
+        try:
+            player.apply_weapon_class(name)
+        except Exception:
+            return
+        update_weapon_buttons(name)
+
+    button_specs = [("pistol", "Pistol"), ("rifle", "Rifle"), ("sniper", "Sniper")]
+    x_positions = (-0.22, 0, 0.22)
+    for (key, label), x in zip(button_specs, x_positions):
+        btn = Button(parent=panel, text=label, scale=ursina.Vec2(0.18, 0.07), position=ursina.Vec2(x, -0.26), on_click=lambda k=key: select_weapon_class(k))
+        weapon_buttons.append((key, btn))
+
+    update_weapon_buttons(player.weapon_class)
+    build_lobby_ui()
+    clear_victory_ui()
 
     msg_thread = threading.Thread(target=receive, daemon=True)
     msg_thread.start()
